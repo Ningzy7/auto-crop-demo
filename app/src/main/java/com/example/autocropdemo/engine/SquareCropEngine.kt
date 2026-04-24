@@ -55,7 +55,7 @@ class SquareCropEngine {
         val w = rgba.cols()
         val h = rgba.rows()
         return raw.mapIndexed { index, item ->
-            val safe = clampSquare(item.rect, w, h)
+            val safe = adaptiveRefineSquare(rgba, clampSquare(item.rect, w, h))
             val roi = Mat(rgba, safe)
             val bmp = Bitmap.createBitmap(roi.cols(), roi.rows(), Bitmap.Config.ARGB_8888)
             Utils.matToBitmap(roi, bmp)
@@ -261,6 +261,73 @@ class SquareCropEngine {
             m
         }
         return Scalar(means.map { it.`val`[0] }.average(), means.map { it.`val`[1] }.average(), means.map { it.`val`[2] }.average(), 0.0)
+    }
+
+    private fun adaptiveRefineSquare(rgba: Mat, seed: CvRect): CvRect {
+        val w = rgba.cols()
+        val h = rgba.rows()
+        val side = seed.width.coerceAtLeast(1)
+        val search = max(6, (side * 0.10).toInt())
+        val gray = Mat()
+        Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
+        Imgproc.GaussianBlur(gray, gray, Size(3.0, 3.0), 0.0)
+        val gx = Mat()
+        val gy = Mat()
+        Imgproc.Sobel(gray, gx, CvType.CV_16S, 1, 0)
+        Imgproc.Sobel(gray, gy, CvType.CV_16S, 0, 1)
+        Core.convertScaleAbs(gx, gx)
+        Core.convertScaleAbs(gy, gy)
+
+        val left = bestVerticalBoundary(gx, seed.x, seed.y, seed.height, -search, search)
+        val right = bestVerticalBoundary(gx, seed.x + seed.width - 1, seed.y, seed.height, -search, search)
+        val top = bestHorizontalBoundary(gy, seed.y, seed.x, seed.width, -search, search)
+        val bottom = bestHorizontalBoundary(gy, seed.y + seed.height - 1, seed.x, seed.width, -search, search)
+
+        val raw = CvRect(
+            min(left, right),
+            min(top, bottom),
+            max(1, abs(right - left) + 1),
+            max(1, abs(bottom - top) + 1)
+        )
+        val refined = rectToSquare(expandRect(raw, 0.008, w, h), w, h)
+        releaseAll(gray, gx, gy)
+        return clampSquare(refined, w, h)
+    }
+
+    private fun bestVerticalBoundary(edge: Mat, baseX: Int, y: Int, height: Int, fromOffset: Int, toOffset: Int): Int {
+        var bestX = baseX.coerceIn(0, edge.cols() - 1)
+        var bestScore = Double.NEGATIVE_INFINITY
+        val y1 = y.coerceIn(0, edge.rows() - 1)
+        val y2 = (y + height - 1).coerceIn(0, edge.rows() - 1)
+        for (off in fromOffset..toOffset) {
+            val x = (baseX + off).coerceIn(0, edge.cols() - 1)
+            val roi = Mat(edge, CvRect(x, y1, 1, max(1, y2 - y1 + 1)))
+            val score = Core.mean(roi).`val`[0]
+            roi.release()
+            if (score > bestScore) {
+                bestScore = score
+                bestX = x
+            }
+        }
+        return bestX
+    }
+
+    private fun bestHorizontalBoundary(edge: Mat, baseY: Int, x: Int, width: Int, fromOffset: Int, toOffset: Int): Int {
+        var bestY = baseY.coerceIn(0, edge.rows() - 1)
+        var bestScore = Double.NEGATIVE_INFINITY
+        val x1 = x.coerceIn(0, edge.cols() - 1)
+        val x2 = (x + width - 1).coerceIn(0, edge.cols() - 1)
+        for (off in fromOffset..toOffset) {
+            val y = (baseY + off).coerceIn(0, edge.rows() - 1)
+            val roi = Mat(edge, CvRect(x1, y, max(1, x2 - x1 + 1), 1))
+            val score = Core.mean(roi).`val`[0]
+            roi.release()
+            if (score > bestScore) {
+                bestScore = score
+                bestY = y
+            }
+        }
+        return bestY
     }
 
     private fun expandRect(r: CvRect, ratio: Double, w: Int, h: Int): CvRect {

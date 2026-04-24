@@ -3,6 +3,7 @@ package com.example.autocropdemo
 import android.animation.AnimatorSet
 import android.animation.ObjectAnimator
 import android.content.ContentValues
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.graphics.Typeface
@@ -41,16 +42,27 @@ class MainActivity : AppCompatActivity() {
 
     private val engine = SquareCropEngine()
     private var sourceBitmap: Bitmap? = null
+    private var sourceUriString: String? = null
     private var candidates: List<SquareCropEngine.Candidate> = emptyList()
     private val selectedIndexes = linkedSetOf<Int>()
 
-    private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    private val prefs by lazy { getSharedPreferences("session", MODE_PRIVATE) }
+
+    private val pickImage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
+        takePersistableReadPermission(uri)
         val bitmap = decodeBitmap(uri)
         if (bitmap == null) {
             toast("加载图片失败")
             return@registerForActivityResult
         }
+        sourceUriString = uri.toString()
+        prefs.edit()
+            .putString(KEY_SOURCE_URI, sourceUriString)
+            .putString(KEY_MODE, "")
+            .putString(KEY_SELECTED, "")
+            .apply()
+
         sourceBitmap = bitmap
         candidates = emptyList()
         selectedIndexes.clear()
@@ -72,14 +84,20 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = if (ok) "OpenCV 已就绪，先选择图片" else "OpenCV 初始化失败"
         if (!ok) toast("OpenCV 初始化失败")
 
-        findViewById<Button>(R.id.btnPick).setOnClickListener { pickImage.launch("image/*") }
+        findViewById<Button>(R.id.btnPick).setOnClickListener { pickImage.launch(arrayOf("image/*")) }
 
         findViewById<Button>(R.id.btnAutoCrop).setOnClickListener {
-            runDetection("三路识别中：轮廓 / 色差 / 投影...") { bitmap -> engine.detectThree(bitmap) }
+            prefs.edit().putString(KEY_MODE, MODE_THREE).putString(KEY_SELECTED, "").apply()
+            runDetection("三路识别中：轮廓 / 色差 / 投影...", clearSelection = true) { bitmap ->
+                engine.detectThree(bitmap)
+            }
         }
 
         findViewById<Button>(R.id.btnMultiCrop).setOnClickListener {
-            runDetection("多目标识别中：生成多个裁切候选...") { bitmap -> engine.detectMultiple(bitmap, 30) }
+            prefs.edit().putString(KEY_MODE, MODE_MULTI).putString(KEY_SELECTED, "").apply()
+            runDetection("多目标识别中：生成多个裁切候选...", clearSelection = true) { bitmap ->
+                engine.detectMultiple(bitmap, 30)
+            }
         }
 
         findViewById<Button>(R.id.btnSave).setOnClickListener {
@@ -96,9 +114,60 @@ class MainActivity : AppCompatActivity() {
                 if (saved > 0) playHeartEffect()
             }
         }
+
+        restoreSession(savedInstanceState)
     }
 
-    private fun runDetection(status: String, block: (Bitmap) -> List<SquareCropEngine.Candidate>) {
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(KEY_SOURCE_URI, sourceUriString)
+        outState.putString(KEY_SELECTED, selectedIndexes.joinToString(","))
+    }
+
+    override fun onPause() {
+        super.onPause()
+        prefs.edit()
+            .putString(KEY_SOURCE_URI, sourceUriString)
+            .putString(KEY_SELECTED, selectedIndexes.joinToString(","))
+            .apply()
+    }
+
+    private fun restoreSession(savedInstanceState: Bundle?) {
+        val uriText = savedInstanceState?.getString(KEY_SOURCE_URI) ?: prefs.getString(KEY_SOURCE_URI, null)
+        if (uriText.isNullOrBlank()) return
+
+        val uri = Uri.parse(uriText)
+        val bitmap = decodeBitmap(uri) ?: return
+        sourceUriString = uriText
+        sourceBitmap = bitmap
+        ivOriginal.setImageBitmap(bitmap)
+
+        selectedIndexes.clear()
+        val selectedText = savedInstanceState?.getString(KEY_SELECTED) ?: prefs.getString(KEY_SELECTED, "") ?: ""
+        selectedText.split(",")
+            .mapNotNull { it.toIntOrNull() }
+            .forEach { selectedIndexes.add(it) }
+
+        when (prefs.getString(KEY_MODE, "")) {
+            MODE_THREE -> runDetection("正在恢复三路候选...", clearSelection = false) { engine.detectThree(it) }
+            MODE_MULTI -> runDetection("正在恢复多目标候选...", clearSelection = false) { engine.detectMultiple(it, 30) }
+            else -> tvStatus.text = "已恢复上次图片：${bitmap.width}x${bitmap.height}"
+        }
+    }
+
+    private fun takePersistableReadPermission(uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: Exception) {
+            // 部分图片来源不支持持久授权；失败不影响当前会话使用。
+        }
+    }
+
+    private fun runDetection(
+        status: String,
+        clearSelection: Boolean = true,
+        block: (Bitmap) -> List<SquareCropEngine.Candidate>
+    ) {
         val src = sourceBitmap
         if (src == null) {
             toast("请先选择图片")
@@ -106,10 +175,11 @@ class MainActivity : AppCompatActivity() {
         }
         tvStatus.text = status
         resultContainer.removeAllViews()
-        selectedIndexes.clear()
+        if (clearSelection) selectedIndexes.clear()
         lifecycleScope.launch {
             val list = withContext(Dispatchers.Default) { block(src) }
             candidates = list
+            selectedIndexes.removeAll { it !in list.indices }
             renderCandidates(list)
             tvStatus.text = "已生成 ${list.size} 个候选，勾选后可批量保存 💖"
         }
@@ -160,6 +230,7 @@ class MainActivity : AppCompatActivity() {
 
             fun toggle() {
                 if (selectedIndexes.contains(index)) selectedIndexes.remove(index) else selectedIndexes.add(index)
+                prefs.edit().putString(KEY_SELECTED, selectedIndexes.joinToString(",")).apply()
                 refreshSelectionUi()
                 if (selectedIndexes.contains(index)) playHeartEffect()
             }
@@ -246,4 +317,12 @@ class MainActivity : AppCompatActivity() {
     private fun timestamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    companion object {
+        private const val KEY_SOURCE_URI = "source_uri"
+        private const val KEY_SELECTED = "selected_indexes"
+        private const val KEY_MODE = "last_mode"
+        private const val MODE_THREE = "three"
+        private const val MODE_MULTI = "multi"
+    }
 }
