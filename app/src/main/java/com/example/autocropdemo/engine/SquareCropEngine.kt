@@ -8,7 +8,6 @@ import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
-import org.opencv.core.Point
 import org.opencv.core.Rect as CvRect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
@@ -24,87 +23,105 @@ class SquareCropEngine {
         val rect: Rect,
         val method: String,
         val score: Double,
-        val debugInfo: String
+        val debugInfo: String,
+        val selected: Boolean = false
     )
+
+    private data class RawCandidate(val method: String, val rect: CvRect, val score: Double)
 
     fun detectThree(inputBitmap: Bitmap): List<Candidate> {
         val rgba = Mat()
         Utils.bitmapToMat(inputBitmap, rgba)
+        val raw = listOf(detectBestByContour(rgba), detectBestByColorDiff(rgba), detectBestByProjection(rgba))
+        val out = buildCandidates(rgba, raw)
+        rgba.release()
+        return out
+    }
+
+    fun detectMultiple(inputBitmap: Bitmap, maxCount: Int = 24): List<Candidate> {
+        val rgba = Mat()
+        Utils.bitmapToMat(inputBitmap, rgba)
+        val raw = mutableListOf<RawCandidate>()
+        raw += detectContourCandidates(rgba, maxCount)
+        raw += detectColorDiffCandidates(rgba, maxCount)
+        raw += detectProjectionGridCandidates(rgba, maxCount)
+        val merged = mergeCandidates(raw, rgba.cols(), rgba.rows(), maxCount)
+        val out = buildCandidates(rgba, merged)
+        rgba.release()
+        return out
+    }
+
+    private fun buildCandidates(rgba: Mat, raw: List<RawCandidate>): List<Candidate> {
         val w = rgba.cols()
         val h = rgba.rows()
-
-        val rects = listOf(
-            detectByContour(rgba),
-            detectByColorDiff(rgba),
-            detectByProjection(rgba)
-        )
-
-        val candidates = rects.map { (method, rect, baseScore) ->
-            val safe = clampSquare(rect, w, h)
-            val out = Mat(rgba, safe)
-            val bmp = Bitmap.createBitmap(out.cols(), out.rows(), Bitmap.Config.ARGB_8888)
-            Utils.matToBitmap(out, bmp)
-            out.release()
+        return raw.mapIndexed { index, item ->
+            val safe = clampSquare(item.rect, w, h)
+            val roi = Mat(rgba, safe)
+            val bmp = Bitmap.createBitmap(roi.cols(), roi.rows(), Bitmap.Config.ARGB_8888)
+            Utils.matToBitmap(roi, bmp)
+            roi.release()
             Candidate(
                 bitmap = bmp,
                 rect = Rect(safe.x, safe.y, safe.x + safe.width, safe.y + safe.height),
-                method = method,
-                score = baseScore,
-                debugInfo = "$method: ${safe.width}x${safe.height}@(${safe.x},${safe.y}), score=${"%.2f".format(baseScore)}"
+                method = item.method,
+                score = item.score,
+                debugInfo = "#${index + 1} ${item.method}: ${safe.width}x${safe.height}@(${safe.x},${safe.y}), score=${"%.2f".format(item.score)}"
             )
         }
-
-        rgba.release()
-        return candidates
     }
 
-    private fun detectByContour(rgba: Mat): Triple<String, CvRect, Double> {
+    private fun detectBestByContour(rgba: Mat): RawCandidate = detectContourCandidates(rgba, 1).firstOrNull()
+        ?: RawCandidate("轮廓方形", fullCenterSquare(rgba.cols(), rgba.rows()), 0.25)
+
+    private fun detectBestByColorDiff(rgba: Mat): RawCandidate = detectColorDiffCandidates(rgba, 1).firstOrNull()
+        ?: RawCandidate("色差方形", fullCenterSquare(rgba.cols(), rgba.rows()), 0.25)
+
+    private fun detectBestByProjection(rgba: Mat): RawCandidate = detectProjectionGridCandidates(rgba, 1).firstOrNull()
+        ?: RawCandidate("投影方形", fullCenterSquare(rgba.cols(), rgba.rows()), 0.25)
+
+    private fun detectContourCandidates(rgba: Mat, maxCount: Int): List<RawCandidate> {
+        val w = rgba.cols()
+        val h = rgba.rows()
+        val imageArea = w * h.toDouble()
         val gray = Mat()
         Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
         Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.0)
 
-        val edges = Mat()
-        Imgproc.Canny(gray, edges, 40.0, 120.0)
-        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
-        Imgproc.morphologyEx(edges, edges, Imgproc.MORPH_CLOSE, kernel)
-
-        val contours = mutableListOf<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(edges.clone(), contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-
-        val imageArea = rgba.cols() * rgba.rows().toDouble()
-        var bestRect = fullCenterSquare(rgba.cols(), rgba.rows())
-        var bestScore = 0.0
-
-        for (c in contours) {
-            val area = Imgproc.contourArea(c)
-            if (area < imageArea * 0.03) {
+        val all = mutableListOf<RawCandidate>()
+        val thresholds = listOf(28.0 to 90.0, 40.0 to 120.0, 70.0 to 180.0)
+        for ((low, high) in thresholds) {
+            val edges = Mat()
+            Imgproc.Canny(gray, edges, low, high)
+            val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
+            Imgproc.morphologyEx(edges, edges, Imgproc.MORPH_CLOSE, kernel)
+            val contours = mutableListOf<MatOfPoint>()
+            val hierarchy = Mat()
+            Imgproc.findContours(edges.clone(), contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+            for (c in contours) {
+                val r0 = Imgproc.boundingRect(c)
+                val sq = rectToSquare(expandRect(r0, 0.015, w, h), w, h)
+                val areaRatio = (sq.width * sq.height).toDouble() / imageArea
+                if (areaRatio in 0.015..0.98) {
+                    val peri = Imgproc.arcLength(MatOfPoint2f(*c.toArray()), true)
+                    val approx = MatOfPoint2f()
+                    Imgproc.approxPolyDP(MatOfPoint2f(*c.toArray()), approx, 0.035 * peri, true)
+                    val polyBonus = if (approx.total().toInt() in 4..10) 0.18 else 0.0
+                    val score = (squareAspectScore(r0) * 0.45 + areaReasonScore(areaRatio) * 0.25 + edgeStrengthScore(edges, sq) * 0.25 + polyBonus).coerceIn(0.0, 1.2)
+                    all += RawCandidate("轮廓", sq, score)
+                    approx.release()
+                }
                 c.release()
-                continue
             }
-            val peri = Imgproc.arcLength(MatOfPoint2f(*c.toArray()), true)
-            val approx = MatOfPoint2f()
-            Imgproc.approxPolyDP(MatOfPoint2f(*c.toArray()), approx, 0.03 * peri, true)
-            val r = Imgproc.boundingRect(c)
-            val aspect = squareAspectScore(r)
-            val areaRatio = (r.width * r.height).toDouble() / imageArea
-            val polyBonus = if (approx.total().toInt() in 4..8) 0.25 else 0.0
-            val score = aspect * 0.5 + areaReasonScore(areaRatio) * 0.25 + polyBonus
-            if (score > bestScore) {
-                bestScore = score
-                bestRect = r
-            }
-            approx.release()
-            c.release()
+            releaseAll(edges, kernel, hierarchy)
         }
-
-        releaseAll(gray, edges, kernel, hierarchy)
-        return Triple("轮廓方形", bestRect, bestScore.coerceAtLeast(0.25))
+        gray.release()
+        return mergeCandidates(all, w, h, maxCount)
     }
 
-    private fun detectByColorDiff(rgba: Mat): Triple<String, CvRect, Double> {
+    private fun detectColorDiffCandidates(rgba: Mat, maxCount: Int): List<RawCandidate> {
         val w = rgba.cols()
         val h = rgba.rows()
+        val imageArea = w * h.toDouble()
         val border = max(4, (min(w, h) * 0.04).toInt())
         val bgMean = estimateBorderMeanLab(rgba, border)
 
@@ -112,7 +129,6 @@ class SquareCropEngine {
         val lab = Mat()
         Imgproc.cvtColor(rgba, rgb, Imgproc.COLOR_RGBA2RGB)
         Imgproc.cvtColor(rgb, lab, Imgproc.COLOR_RGB2Lab)
-
         val bg = Mat(lab.size(), lab.type(), bgMean)
         val diff = Mat()
         Core.absdiff(lab, bg, diff)
@@ -122,37 +138,40 @@ class SquareCropEngine {
         Core.addWeighted(channels[0], 1.0, channels[1], 1.0, 0.0, diffGray)
         Core.addWeighted(diffGray, 1.0, channels[2], 1.0, 0.0, diffGray)
 
-        val mask = Mat()
-        Imgproc.threshold(diffGray, mask, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
-        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(9.0, 9.0))
-        Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel)
-
-        val contours = mutableListOf<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(mask.clone(), contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-
-        var union: CvRect? = null
-        for (c in contours) {
-            val r = Imgproc.boundingRect(c)
-            val area = r.width * r.height
-            if (area > w * h * 0.01) union = if (union == null) r else unionRect(union!!, r)
-            c.release()
+        val all = mutableListOf<RawCandidate>()
+        val modes = listOf(Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU, Imgproc.THRESH_BINARY)
+        for ((i, mode) in modes.withIndex()) {
+            val mask = Mat()
+            val threshold = if (mode == Imgproc.THRESH_BINARY) 22.0 else 0.0
+            Imgproc.threshold(diffGray, mask, threshold, 255.0, mode)
+            val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(7.0 + i * 4.0, 7.0 + i * 4.0))
+            Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel)
+            val contours = mutableListOf<MatOfPoint>()
+            val hierarchy = Mat()
+            Imgproc.findContours(mask.clone(), contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+            for (c in contours) {
+                val r0 = Imgproc.boundingRect(c)
+                val sq = rectToSquare(expandRect(r0, 0.035, w, h), w, h)
+                val areaRatio = (sq.width * sq.height).toDouble() / imageArea
+                if (areaRatio in 0.015..0.98) {
+                    val score = (0.25 + squareAspectScore(r0) * 0.25 + areaReasonScore(areaRatio) * 0.25 + edgeStrengthScore(mask, sq) * 0.25).coerceIn(0.0, 1.1)
+                    all += RawCandidate("色差", sq, score)
+                }
+                c.release()
+            }
+            releaseAll(mask, kernel, hierarchy)
         }
-        val baseRect = union ?: fullCenterSquare(w, h)
-        val sq = rectToSquare(baseRect, w, h)
-        val score = 0.35 + squareAspectScore(baseRect) * 0.25 + areaReasonScore((sq.width * sq.height).toDouble() / (w * h)) * 0.4
-
-        releaseAll(rgb, lab, bg, diff, diffGray, mask, kernel, hierarchy, *channels.toTypedArray())
-        return Triple("色差方形", sq, score)
+        releaseAll(rgb, lab, bg, diff, diffGray, *channels.toTypedArray())
+        return mergeCandidates(all, w, h, maxCount)
     }
 
-    private fun detectByProjection(rgba: Mat): Triple<String, CvRect, Double> {
+    private fun detectProjectionGridCandidates(rgba: Mat, maxCount: Int): List<RawCandidate> {
         val w = rgba.cols()
         val h = rgba.rows()
+        val imageArea = w * h.toDouble()
         val gray = Mat()
         Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
         Imgproc.GaussianBlur(gray, gray, Size(3.0, 3.0), 0.0)
-
         val gradX = Mat()
         val gradY = Mat()
         Imgproc.Sobel(gray, gradX, CvType.CV_16S, 1, 0)
@@ -164,21 +183,67 @@ class SquareCropEngine {
         val rowScores = DoubleArray(h)
         for (x in 0 until w) colScores[x] = Core.sumElems(gradX.col(x)).`val`[0]
         for (y in 0 until h) rowScores[y] = Core.sumElems(gradY.row(y)).`val`[0]
+        val xs = topPeakIndexes(colScores, max(4, (w * 0.04).toInt()), 10)
+        val ys = topPeakIndexes(rowScores, max(4, (h * 0.04).toInt()), 10)
 
-        val marginX = max(2, (w * 0.03).toInt())
-        val marginY = max(2, (h * 0.03).toInt())
-        val left = maxIndex(colScores, marginX, w / 2)
-        val right = maxIndex(colScores, w / 2, w - marginX)
-        val top = maxIndex(rowScores, marginY, h / 2)
-        val bottom = maxIndex(rowScores, h / 2, h - marginY)
-
-        val raw = CvRect(left, top, max(1, right - left), max(1, bottom - top))
-        val sq = rectToSquare(raw, w, h)
-        val aspect = squareAspectScore(raw)
-        val score = 0.25 + aspect * 0.35 + areaReasonScore((sq.width * sq.height).toDouble() / (w * h)) * 0.4
-
+        val all = mutableListOf<RawCandidate>()
+        for (li in xs.indices) for (ri in li + 1 until xs.size) {
+            val left = min(xs[li], xs[ri])
+            val right = max(xs[li], xs[ri])
+            val width = right - left
+            if (width < min(w, h) * 0.08) continue
+            for (ti in ys.indices) for (bi in ti + 1 until ys.size) {
+                val top = min(ys[ti], ys[bi])
+                val bottom = max(ys[ti], ys[bi])
+                val height = bottom - top
+                if (height < min(w, h) * 0.08) continue
+                val aspect = 1.0 - abs(width - height).toDouble() / max(width, height)
+                if (aspect < 0.72) continue
+                val sq = rectToSquare(CvRect(left, top, width, height), w, h)
+                val areaRatio = (sq.width * sq.height).toDouble() / imageArea
+                if (areaRatio !in 0.015..0.98) continue
+                val score = (0.20 + aspect * 0.35 + areaReasonScore(areaRatio) * 0.20 + edgeStrengthScore(gradX, sq) * 0.12 + edgeStrengthScore(gradY, sq) * 0.12).coerceIn(0.0, 1.1)
+                all += RawCandidate("投影", sq, score)
+            }
+        }
         releaseAll(gray, gradX, gradY)
-        return Triple("投影方形", sq, score)
+        return mergeCandidates(all, w, h, maxCount)
+    }
+
+    private fun mergeCandidates(input: List<RawCandidate>, w: Int, h: Int, maxCount: Int): List<RawCandidate> {
+        val sorted = input.map { it.copy(rect = clampSquare(it.rect, w, h)) }.sortedByDescending { it.score }
+        val out = mutableListOf<RawCandidate>()
+        for (c in sorted) {
+            if (out.any { iou(it.rect, c.rect) > 0.55 }) continue
+            out += c
+            if (out.size >= maxCount) break
+        }
+        return out.ifEmpty { listOf(RawCandidate("中心兜底", fullCenterSquare(w, h), 0.2)) }
+    }
+
+    private fun edgeStrengthScore(edge: Mat, r: CvRect): Double {
+        val x1 = r.x.coerceIn(0, edge.cols() - 1)
+        val y1 = r.y.coerceIn(0, edge.rows() - 1)
+        val x2 = (r.x + r.width - 1).coerceIn(0, edge.cols() - 1)
+        val y2 = (r.y + r.height - 1).coerceIn(0, edge.rows() - 1)
+        val top = Core.mean(edge.row(y1)).`val`[0]
+        val bottom = Core.mean(edge.row(y2)).`val`[0]
+        val left = Core.mean(edge.col(x1)).`val`[0]
+        val right = Core.mean(edge.col(x2)).`val`[0]
+        return ((top + bottom + left + right) / 4.0 / 255.0).coerceIn(0.0, 1.0)
+    }
+
+    private fun topPeakIndexes(values: DoubleArray, minDistance: Int, maxPeaks: Int): List<Int> {
+        val order = values.indices.sortedByDescending { values[it] }
+        val peaks = mutableListOf<Int>()
+        val margin = minDistance / 2
+        for (i in order) {
+            if (i < margin || i >= values.size - margin) continue
+            if (peaks.any { abs(it - i) < minDistance }) continue
+            peaks += i
+            if (peaks.size >= maxPeaks) break
+        }
+        return peaks.sorted()
     }
 
     private fun estimateBorderMeanLab(rgba: Mat, b: Int): Scalar {
@@ -198,24 +263,23 @@ class SquareCropEngine {
         return Scalar(means.map { it.`val`[0] }.average(), means.map { it.`val`[1] }.average(), means.map { it.`val`[2] }.average(), 0.0)
     }
 
-    private fun maxIndex(values: DoubleArray, start: Int, end: Int): Int {
-        var best = start.coerceIn(values.indices)
-        var bestVal = Double.NEGATIVE_INFINITY
-        for (i in start.coerceAtLeast(0) until end.coerceAtMost(values.size)) {
-            if (values[i] > bestVal) {
-                bestVal = values[i]
-                best = i
-            }
-        }
-        return best
+    private fun expandRect(r: CvRect, ratio: Double, w: Int, h: Int): CvRect {
+        val pad = (max(r.width, r.height) * ratio).toInt().coerceAtLeast(2)
+        val x = (r.x - pad).coerceAtLeast(0)
+        val y = (r.y - pad).coerceAtLeast(0)
+        val x2 = (r.x + r.width + pad).coerceAtMost(w)
+        val y2 = (r.y + r.height + pad).coerceAtMost(h)
+        return CvRect(x, y, max(1, x2 - x), max(1, y2 - y))
     }
 
-    private fun unionRect(a: CvRect, b: CvRect): CvRect {
-        val x1 = min(a.x, b.x)
-        val y1 = min(a.y, b.y)
-        val x2 = max(a.x + a.width, b.x + b.width)
-        val y2 = max(a.y + a.height, b.y + b.height)
-        return CvRect(x1, y1, x2 - x1, y2 - y1)
+    private fun iou(a: CvRect, b: CvRect): Double {
+        val x1 = max(a.x, b.x)
+        val y1 = max(a.y, b.y)
+        val x2 = min(a.x + a.width, b.x + b.width)
+        val y2 = min(a.y + a.height, b.y + b.height)
+        val inter = max(0, x2 - x1) * max(0, y2 - y1)
+        val union = a.width * a.height + b.width * b.height - inter
+        return if (union <= 0) 0.0 else inter.toDouble() / union
     }
 
     private fun rectToSquare(r: CvRect, w: Int, h: Int): CvRect {
@@ -226,7 +290,7 @@ class SquareCropEngine {
     }
 
     private fun clampSquare(r: CvRect, w: Int, h: Int): CvRect {
-        val side = min(min(r.width, r.height).coerceAtLeast(1), min(w, h))
+        val side = min(max(r.width, r.height).coerceAtLeast(1), min(w, h))
         var x = r.x + (r.width - side) / 2
         var y = r.y + (r.height - side) / 2
         x = x.coerceIn(0, w - side)
@@ -245,8 +309,8 @@ class SquareCropEngine {
     }
 
     private fun areaReasonScore(ratio: Double): Double = when {
-        ratio < 0.05 -> ratio / 0.05 * 0.4
-        ratio <= 0.95 -> 1.0
+        ratio < 0.03 -> ratio / 0.03 * 0.5
+        ratio <= 0.92 -> 1.0
         else -> 0.75
     }
 

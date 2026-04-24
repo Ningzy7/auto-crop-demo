@@ -13,6 +13,7 @@ import android.provider.MediaStore
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -41,7 +42,7 @@ class MainActivity : AppCompatActivity() {
     private val engine = SquareCropEngine()
     private var sourceBitmap: Bitmap? = null
     private var candidates: List<SquareCropEngine.Candidate> = emptyList()
-    private var selectedIndex: Int = -1
+    private val selectedIndexes = linkedSetOf<Int>()
 
     private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -52,10 +53,10 @@ class MainActivity : AppCompatActivity() {
         }
         sourceBitmap = bitmap
         candidates = emptyList()
-        selectedIndex = -1
+        selectedIndexes.clear()
         ivOriginal.setImageBitmap(bitmap)
         resultContainer.removeAllViews()
-        tvStatus.text = "已加载：${bitmap.width}x${bitmap.height}，点击识别方形"
+        tvStatus.text = "已加载：${bitmap.width}x${bitmap.height}，可单目标或多目标识别"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,82 +75,115 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnPick).setOnClickListener { pickImage.launch("image/*") }
 
         findViewById<Button>(R.id.btnAutoCrop).setOnClickListener {
-            val src = sourceBitmap
-            if (src == null) {
-                toast("请先选择图片")
-                return@setOnClickListener
-            }
-            tvStatus.text = "三路识别中：轮廓 / 色差 / 投影..."
-            resultContainer.removeAllViews()
-            lifecycleScope.launch {
-                val list = withContext(Dispatchers.Default) { engine.detectThree(src) }
-                candidates = list
-                selectedIndex = -1
-                renderCandidates(list)
-                tvStatus.text = "已生成 ${list.size} 个候选，请点选你喜欢的方形裁切 💖"
-            }
+            runDetection("三路识别中：轮廓 / 色差 / 投影...") { bitmap -> engine.detectThree(bitmap) }
+        }
+
+        findViewById<Button>(R.id.btnMultiCrop).setOnClickListener {
+            runDetection("多目标识别中：生成多个裁切候选...") { bitmap -> engine.detectMultiple(bitmap, 30) }
         }
 
         findViewById<Button>(R.id.btnSave).setOnClickListener {
-            if (selectedIndex !in candidates.indices) {
-                toast("请先点选一个候选图")
+            if (selectedIndexes.isEmpty()) {
+                toast("请先勾选一个或多个候选图")
                 return@setOnClickListener
             }
-            val uri = savePngToGallery(candidates[selectedIndex].bitmap)
-            if (uri != null) {
-                toast("已保存到相册")
-                tvStatus.text = "保存成功：${candidates[selectedIndex].debugInfo}"
-            } else toast("保存失败")
+            lifecycleScope.launch {
+                val saved = withContext(Dispatchers.IO) {
+                    selectedIndexes.mapNotNull { idx -> savePngToGallery(candidates[idx].bitmap, idx + 1) }.size
+                }
+                toast("已保存 $saved 张")
+                tvStatus.text = "批量保存完成：$saved/${selectedIndexes.size} 张"
+                if (saved > 0) playHeartEffect()
+            }
+        }
+    }
+
+    private fun runDetection(status: String, block: (Bitmap) -> List<SquareCropEngine.Candidate>) {
+        val src = sourceBitmap
+        if (src == null) {
+            toast("请先选择图片")
+            return
+        }
+        tvStatus.text = status
+        resultContainer.removeAllViews()
+        selectedIndexes.clear()
+        lifecycleScope.launch {
+            val list = withContext(Dispatchers.Default) { block(src) }
+            candidates = list
+            renderCandidates(list)
+            tvStatus.text = "已生成 ${list.size} 个候选，勾选后可批量保存 💖"
         }
     }
 
     private fun renderCandidates(list: List<SquareCropEngine.Candidate>) {
         resultContainer.removeAllViews()
         list.forEachIndexed { index, candidate ->
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(8))
                 background = makeCardBg(false)
-                val lp = LinearLayout.LayoutParams(dp(190), LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.setMargins(dp(6), dp(6), dp(6), dp(6))
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                lp.setMargins(dp(4), dp(5), dp(4), dp(5))
                 layoutParams = lp
                 isClickable = true
                 isFocusable = true
             }
 
+            val check = CheckBox(this).apply {
+                isChecked = selectedIndexes.contains(index)
+                layoutParams = LinearLayout.LayoutParams(dp(46), LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+
+            val image = ImageView(this).apply {
+                setImageBitmap(candidate.bitmap)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                layoutParams = LinearLayout.LayoutParams(dp(112), dp(112))
+            }
+
+            val textBox = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(10), 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
             val title = TextView(this).apply {
-                text = candidate.method
-                gravity = Gravity.CENTER
+                text = "${index + 1}. ${candidate.method}"
                 typeface = Typeface.DEFAULT_BOLD
                 textSize = 15f
             }
-            val image = ImageView(this).apply {
-                setImageBitmap(candidate.bitmap)
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                adjustViewBounds = true
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(160))
-            }
             val info = TextView(this).apply {
-                text = "score ${"%.2f".format(candidate.score)}\n${candidate.rect.width()}×${candidate.rect.height()}"
-                gravity = Gravity.CENTER
+                text = "score ${"%.2f".format(candidate.score)}\n${candidate.rect.width()}×${candidate.rect.height()} @ (${candidate.rect.left}, ${candidate.rect.top})"
                 textSize = 12f
             }
-            card.addView(title)
-            card.addView(image)
-            card.addView(info)
-            card.setOnClickListener { selectCandidate(index) }
-            resultContainer.addView(card)
+            textBox.addView(title)
+            textBox.addView(info)
+
+            fun toggle() {
+                if (selectedIndexes.contains(index)) selectedIndexes.remove(index) else selectedIndexes.add(index)
+                refreshSelectionUi()
+                if (selectedIndexes.contains(index)) playHeartEffect()
+            }
+            row.setOnClickListener { toggle() }
+            check.setOnClickListener { toggle() }
+            image.setOnClickListener { toggle() }
+
+            row.addView(check)
+            row.addView(image)
+            row.addView(textBox)
+            resultContainer.addView(row)
         }
+        refreshSelectionUi()
     }
 
-    private fun selectCandidate(index: Int) {
-        selectedIndex = index
+    private fun refreshSelectionUi() {
         for (i in 0 until resultContainer.childCount) {
-            resultContainer.getChildAt(i).background = makeCardBg(i == index)
+            val row = resultContainer.getChildAt(i) as LinearLayout
+            row.background = makeCardBg(selectedIndexes.contains(i))
+            val cb = row.getChildAt(0) as CheckBox
+            cb.isChecked = selectedIndexes.contains(i)
         }
-        tvStatus.text = "已选择：${candidates[index].debugInfo}"
-        playHeartEffect()
+        val selectedText = if (selectedIndexes.isEmpty()) "未选择" else "已选 ${selectedIndexes.size} 张"
+        if (candidates.isNotEmpty()) tvStatus.text = "$selectedText，可继续勾选或批量保存"
     }
 
     private fun makeCardBg(selected: Boolean) = android.graphics.drawable.GradientDrawable().apply {
@@ -183,8 +217,8 @@ class MainActivity : AppCompatActivity() {
         }
     } catch (_: Exception) { null }
 
-    private fun savePngToGallery(bitmap: Bitmap): Uri? {
-        val fileName = "square_crop_${timestamp()}.png"
+    private fun savePngToGallery(bitmap: Bitmap, index: Int): Uri? {
+        val fileName = "square_crop_${timestamp()}_${index}.png"
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Images.Media.MIME_TYPE, "image/png")

@@ -20,8 +20,18 @@
         android:id="@+id/btnAutoCrop"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="识别方形"
+        android:text="三路候选"
         app:layout_constraintStart_toEndOf="@id/btnPick"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toStartOf="@+id/btnMultiCrop"
+        app:layout_constraintHorizontal_weight="1" />
+
+    <Button
+        android:id="@+id/btnMultiCrop"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="多目标"
+        app:layout_constraintStart_toEndOf="@id/btnAutoCrop"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toStartOf="@+id/btnSave"
         app:layout_constraintHorizontal_weight="1" />
@@ -30,8 +40,8 @@
         android:id="@+id/btnSave"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="保存选中"
-        app:layout_constraintStart_toEndOf="@id/btnAutoCrop"
+        android:text="批量保存"
+        app:layout_constraintStart_toEndOf="@id/btnMultiCrop"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_weight="1" />
@@ -57,15 +67,14 @@
         app:layout_constraintTop_toBottomOf="@id/tvStatus"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHeight_percent="0.32" />
+        app:layout_constraintHeight_percent="0.28" />
 
-    <HorizontalScrollView
+    <ScrollView
         android:id="@+id/resultScroll"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_marginTop="12dp"
-        android:fillViewport="false"
-        android:overScrollMode="ifContentScrolls"
+        android:fillViewport="true"
         app:layout_constraintTop_toBottomOf="@id/ivOriginal"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
@@ -73,11 +82,10 @@
 
         <LinearLayout
             android:id="@+id/resultContainer"
-            android:layout_width="wrap_content"
-            android:layout_height="match_parent"
-            android:gravity="center_vertical"
-            android:orientation="horizontal" />
-    </HorizontalScrollView>
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
 
     <TextView
         android:id="@+id/heartBurst"
