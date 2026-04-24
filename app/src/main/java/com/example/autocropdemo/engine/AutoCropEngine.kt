@@ -28,8 +28,11 @@ class AutoCropEngine {
 
         val bgMeanLab = estimateBorderBackgroundLab(rgba, border)
 
+        val rgb = Mat()
+        Imgproc.cvtColor(rgba, rgb, Imgproc.COLOR_RGBA2RGB)
+
         val lab = Mat()
-        Imgproc.cvtColor(rgba, lab, Imgproc.COLOR_RGBA2Lab)
+        Imgproc.cvtColor(rgb, lab, Imgproc.COLOR_RGB2Lab)
 
         val bg = Mat(lab.size(), lab.type(), bgMeanLab)
         val diff = Mat()
@@ -61,7 +64,7 @@ class AutoCropEngine {
         Utils.matToBitmap(out, resultBitmap)
 
         releaseAll(
-            rgba, lab, bg, diff, diffGray, mask, kernel, croppedRgba, maskCrop, out,
+            rgba, rgb, lab, bg, diff, diffGray, mask, kernel, croppedRgba, maskCrop, out,
             *channels.toTypedArray()
         )
 
@@ -85,8 +88,11 @@ class AutoCropEngine {
 
         val labMeans = strips.map {
             val lab = Mat()
-            Imgproc.cvtColor(it, lab, Imgproc.COLOR_RGBA2Lab)
+            val rgb = Mat()
+            Imgproc.cvtColor(it, rgb, Imgproc.COLOR_RGBA2RGB)
+            Imgproc.cvtColor(rgb, lab, Imgproc.COLOR_RGB2Lab)
             val m = Core.mean(lab)
+            rgb.release()
             lab.release()
             m
         }

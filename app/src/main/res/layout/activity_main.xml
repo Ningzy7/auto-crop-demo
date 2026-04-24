@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:padding="12dp">
@@ -13,27 +14,27 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toStartOf="@+id/btnAutoCrop"
-        app:layout_constraintHorizontalWeight="1" />
+        app:layout_constraintHorizontal_weight="1" />
 
     <Button
         android:id="@+id/btnAutoCrop"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="自动裁切"
+        android:text="识别方形"
         app:layout_constraintStart_toEndOf="@id/btnPick"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toStartOf="@+id/btnSave"
-        app:layout_constraintHorizontalWeight="1" />
+        app:layout_constraintHorizontal_weight="1" />
 
     <Button
         android:id="@+id/btnSave"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="保存PNG"
+        android:text="保存选中"
         app:layout_constraintStart_toEndOf="@id/btnAutoCrop"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontalWeight="1" />
+        app:layout_constraintHorizontal_weight="1" />
 
     <TextView
         android:id="@+id/tvStatus"
@@ -46,51 +47,48 @@
         app:layout_constraintTop_toBottomOf="@id/btnPick"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <TextView
-        android:id="@+id/tvOriginal"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="原图"
-        android:textStyle="bold"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/tvStatus"
-        app:layout_constraintEnd_toEndOf="parent" />
-
     <ImageView
         android:id="@+id/ivOriginal"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_marginTop="8dp"
-        android:adjustViewBounds="true"
         android:background="#EFEFEF"
         android:scaleType="fitCenter"
-        app:layout_constraintTop_toBottomOf="@id/tvOriginal"
+        app:layout_constraintTop_toBottomOf="@id/tvStatus"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHeight_percent="0.33" />
+        app:layout_constraintHeight_percent="0.32" />
 
-    <TextView
-        android:id="@+id/tvResult"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:text="自动裁切结果（透明背景）"
-        android:textStyle="bold"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/ivOriginal"
-        app:layout_constraintEnd_toEndOf="parent" />
-
-    <ImageView
-        android:id="@+id/ivResult"
+    <HorizontalScrollView
+        android:id="@+id/resultScroll"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_marginTop="8dp"
-        android:background="#EFEFEF"
-        android:scaleType="fitCenter"
-        app:layout_constraintTop_toBottomOf="@id/tvResult"
+        android:layout_marginTop="12dp"
+        android:fillViewport="false"
+        android:overScrollMode="ifContentScrolls"
+        app:layout_constraintTop_toBottomOf="@id/ivOriginal"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent" />
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <LinearLayout
+            android:id="@+id/resultContainer"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
+
+    <TextView
+        android:id="@+id/heartBurst"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="💖"
+        android:textSize="64sp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
