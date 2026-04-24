@@ -96,7 +96,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnMultiCrop).setOnClickListener {
             prefs.edit().putString(KEY_MODE, MODE_MULTI).putString(KEY_SELECTED, "").apply()
             runDetection("多目标识别中：生成多个裁切候选...", clearSelection = true) { bitmap ->
-                engine.detectMultiple(bitmap, 30)
+                engine.detectMultiple(bitmap, 12)
             }
         }
 
@@ -150,7 +150,7 @@ class MainActivity : AppCompatActivity() {
 
         when (prefs.getString(KEY_MODE, "")) {
             MODE_THREE -> runDetection("正在恢复三路候选...", clearSelection = false) { engine.detectThree(it) }
-            MODE_MULTI -> runDetection("正在恢复多目标候选...", clearSelection = false) { engine.detectMultiple(it, 30) }
+            MODE_MULTI -> runDetection("正在恢复多目标候选...", clearSelection = false) { engine.detectMultiple(it, 12) }
             else -> tvStatus.text = "已恢复上次图片：${bitmap.width}x${bitmap.height}"
         }
     }

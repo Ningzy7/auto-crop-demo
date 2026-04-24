@@ -211,14 +211,72 @@ class SquareCropEngine {
     }
 
     private fun mergeCandidates(input: List<RawCandidate>, w: Int, h: Int, maxCount: Int): List<RawCandidate> {
-        val sorted = input.map { it.copy(rect = clampSquare(it.rect, w, h)) }.sortedByDescending { it.score }
+        val sorted = input
+            .map { it.copy(rect = clampSquare(it.rect, w, h)) }
+            .filter { qualityGate(it, w, h) }
+            .sortedByDescending { it.score }
+
         val out = mutableListOf<RawCandidate>()
+        val methodQuota = mutableMapOf<String, Int>()
+        val perMethodLimit = max(2, maxCount / 3 + 1)
+
         for (c in sorted) {
-            if (out.any { iou(it.rect, c.rect) > 0.55 }) continue
+            if ((methodQuota[c.method] ?: 0) >= perMethodLimit) continue
+
+            val duplicate = out.any { existing ->
+                val overlap = iou(existing.rect, c.rect)
+                val centerNear = centerDistanceRatio(existing.rect, c.rect) < 0.12
+                val sizeNear = sizeRatio(existing.rect, c.rect) > 0.86
+                overlap > 0.38 || (centerNear && sizeNear)
+            }
+            if (duplicate) continue
+
+            val contained = out.any { existing ->
+                containmentRatio(c.rect, existing.rect) > 0.78 || containmentRatio(existing.rect, c.rect) > 0.78
+            }
+            if (contained) continue
+
             out += c
+            methodQuota[c.method] = (methodQuota[c.method] ?: 0) + 1
             if (out.size >= maxCount) break
         }
         return out.ifEmpty { listOf(RawCandidate("中心兜底", fullCenterSquare(w, h), 0.2)) }
+    }
+
+    private fun qualityGate(c: RawCandidate, w: Int, h: Int): Boolean {
+        val minSide = min(w, h)
+        val side = c.rect.width
+        val areaRatio = (side * side).toDouble() / (w * h)
+        if (side < minSide * 0.08) return false
+        if (areaRatio < 0.01 || areaRatio > 0.96) return false
+        if (c.score < 0.32) return false
+        return true
+    }
+
+    private fun centerDistanceRatio(a: CvRect, b: CvRect): Double {
+        val ax = a.x + a.width / 2.0
+        val ay = a.y + a.height / 2.0
+        val bx = b.x + b.width / 2.0
+        val by = b.y + b.height / 2.0
+        val dx = ax - bx
+        val dy = ay - by
+        return kotlin.math.sqrt(dx * dx + dy * dy) / max(max(a.width, a.height), max(b.width, b.height)).coerceAtLeast(1)
+    }
+
+    private fun sizeRatio(a: CvRect, b: CvRect): Double {
+        val small = min(a.width, b.width).toDouble()
+        val large = max(a.width, b.width).toDouble().coerceAtLeast(1.0)
+        return small / large
+    }
+
+    private fun containmentRatio(inner: CvRect, outer: CvRect): Double {
+        val x1 = max(inner.x, outer.x)
+        val y1 = max(inner.y, outer.y)
+        val x2 = min(inner.x + inner.width, outer.x + outer.width)
+        val y2 = min(inner.y + inner.height, outer.y + outer.height)
+        val inter = max(0, x2 - x1) * max(0, y2 - y1)
+        val innerArea = inner.width * inner.height
+        return if (innerArea <= 0) 0.0 else inter.toDouble() / innerArea
     }
 
     private fun edgeStrengthScore(edge: Mat, r: CvRect): Double {
