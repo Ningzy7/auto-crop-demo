@@ -6,6 +6,10 @@ on:
 jobs:
   build-debug:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout
@@ -15,29 +19,59 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Show environment
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          which java || true
+          java -version
+          which sdkmanager || true
+          sdkmanager --version || true
 
       - name: Accept SDK licenses
         run: yes | sdkmanager --licenses
 
       - name: Install required Android packages
         run: |
-          sdkmanager \
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-      - name: Grant execute permission for gradlew
+      - name: Create local.properties
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      - name: Ensure gradlew executable
         run: chmod +x gradlew
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Show APK outputs
+        if: always()
+        run: |
+          find app/build/outputs -type f | sort || true
 
       - name: Upload debug APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: auto-crop-demo-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-crop-demo-build-logs
+          path: |
+            **/build/reports/**
+            **/build/outputs/logs/**
+            local.properties
